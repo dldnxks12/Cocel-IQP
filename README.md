@@ -1,6 +1,5 @@
 #### Cocel-IQP
 
-
-  - Useing Mujoco in OpenAI Gymnasium 
+        - Using Mujoco in OpenAI Gymnasium 
   
-    Modifiying InvertedDoublePendulum to Inverted Quadruple Pendulum
+            - Modifiying InvertedDoublePendulum to Inverted Quadruple Pendulum
