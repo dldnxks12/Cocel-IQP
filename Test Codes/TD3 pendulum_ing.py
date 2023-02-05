@@ -81,13 +81,18 @@ class ReplayBuffer():
 
         states, actions, rewards, next_states, terminateds, truncateds = [],[],[],[],[],[]
         for state, action, reward, next_state, terminated, truncated in mini_batch:
-            states.append(state)
+
+            states.append(state.cpu().numpy())
             actions.append(action)
             rewards.append(reward)
-            next_states.append(next_state)
+            next_states.append(next_state.cpu().numpy())
             terminateds.append(terminated)
             truncateds.append(truncated)
 
+        states = torch.tensor(states, device = device, dtype = torch.float)
+        actions = torch.tensor(actions, device = device, dtype = torch.float)
+        next_states = torch.tensor(next_states, device = device, dtype = torch.float)
+        rewards     = torch.tensor(rewards, device = device, dtype = torch.float)
         return states, actions, rewards, next_states, terminateds, truncateds
 
     def size(self):
@@ -95,61 +100,56 @@ class ReplayBuffer():
 
 def train(Q1, Q1_target, Q2, Q2_target, Pi, Pi_target, Q1_optimizer, Q2_optimizer, Pi_optimizer, Buffer, batch_size):
     states, actions, rewards, next_states, terminateds, truncateds = Buffer.sample(batch_size)
+    Q_loss, pi_loss = 0, 0
 
-    Q1_loss = 0
-    Q2_loss = 0
-    index = 0
-    for state, action, reward, next_state, terminated, truncated in zip(states, actions, rewards, next_states, terminateds, truncateds):
+    noise_bar  = torch.clamp(torch.tensor(noise()[0]), -1, 1)
+    action_bar = Pi_target(next_states) + noise_bar # next_state : 32x3 , action_bar : 32 x 1
 
-        if terminated or truncated:
-            y = reward
+    q1_value = Q1_target(next_states, action_bar).mean()
+    q2_value = Q2_target(next_states, action_bar).mean()
 
+    selected_Q = torch.min(q1_value, q2_value)
+    selected_Q_index = torch.argmin(torch.tensor([q1_value, q2_value]), axis = 0)
+
+
+    dones = []
+
+    for terminated, truncated in zip(terminateds, truncateds):
+        if (terminated == True) or (truncated == True):
+            dones.append([0])
         else:
-            action_bar = Pi_target(next_state) + noise()[0]
-            q1 = Q1_target(next_state, action_bar)
-            q2 = Q2_target(next_state, action_bar)
-            a  = torch.tensor([q1, q2])
-            index  = torch.argmin(a, dim = 0)
-            y  = reward + gamma * a[index]
+            dones.append([1])
 
-        action = action.to(device)
-        if index == 0:
-            Q1_loss += (y - Q1(state, action)) ** 2
-        else:
-            Q2_loss += (y - Q2(state, action)) ** 2
+    dones = torch.tensor(dones, device = device)
+    actions = torch.unsqueeze(actions, dim = 1)
+    rewards = torch.unsqueeze(rewards, dim = 1)
 
-        print(torch.tensor([Q1_loss, Q2_loss]))
-        b = torch.argmin(torch.tensor([Q1_loss, Q2_loss]), dim = 0)
-        print(Q1_loss, Q2_loss)
+    if selected_Q_index == 0:
 
-        if b == 0:
-            Q1_loss = Q1_loss / batch_size
-            Q1_optimizer.zero_grad()
-            Q1_loss.backward()
-            Q1_optimizer.step()
-        else:
-            Q2_loss = Q2_loss / batch_size
-            Q2_optimizer.zero_grad()
-            Q2_loss.backward()
-            Q2_optimizer.step()
+        y = rewards + ( gamma*Q1_target(next_states, action_bar) * dones )
+        Q_loss = torch.nn.functional.smooth_l1_loss(Q1(states, actions), y.detach())
+        Q2_optimizer.zero_grad()
+        Q_loss.backward()
+        Q2_optimizer.step()
 
-    Pi_loss = 0
+    else:
+        y = rewards + (gamma*Q2_target(next_states, action_bar)) * dones
+        Q_loss = torch.nn.functional.smooth_l1_loss(Q2(states, actions), y.detach())
+        Q1_optimizer.zero_grad()
+        Q_loss.backward()
+        Q1_optimizer.step()
 
     for p, q in zip(Q1.parameters(), Q2.parameters()):
         p.requires_grad = False
         q.requires_grad = False
 
-    if b == 0:
-        for state in states:
-            Pi_loss += Q1(state, Pi(state))
+    if selected_Q_index == 0:
+        pi_loss = -Q1(states, Pi(states)).mean()
     else:
-        for state in states:
-            Pi_loss += Q2(state, Pi(state))
+        pi_loss = -Q2(states, Pi(states)).mean()
 
-    # Gradient Ascent
-    Pi_loss = -1 * (Pi_loss/batch_size)
     Pi_optimizer.zero_grad()
-    Pi_loss.backward()
+    pi_loss.backward()
     Pi_optimizer.step()
 
     for p, q in zip(Q1.parameters(), Q2.parameters()):
@@ -209,8 +209,8 @@ for m in Pi_target.parameters():
 
 env = gym.make('Pendulum-v1', g=9.81)
 
-max_time_step = 1000
 MAX_EPISODE   = 1000
+max_time_step = 500
 
 Buffer = ReplayBuffer()
 noise  = OrnsteinUhlenbeckNoise(mu = np.zeros(1))
@@ -235,21 +235,21 @@ for episode in range(MAX_EPISODE):
         Buffer.put([state, action, reward, next_state, terminated, truncated])
         total_reward += reward
 
-        if terminated or truncated:
-            break
-
-        state = next_state
-
         if Buffer.size() > 2000: # Train Q, Pi
             train(Q1, Q1_target, Q2, Q2_target, Pi, Pi_target, Q1_optimizer, Q2_optimizer, Pi_optimizer, Buffer, batch_size)
 
             if time_step % 5 == 0: # Soft update
                 for param_target, param, param_target2, param2 in zip(Q1_target.parameters(), Q1.parameters(), Q2_target.parameters(), Q2.parameters()):
                     param_target.data.copy_(param_target.data * (1.0 - tau) + param.data * tau)
-                    param_target2.data.copy_(param_target2.data * (1.0 - tau) + param.data2 * tau)
+                    param_target2.data.copy_(param_target2.data * (1.0 - tau) + param2.data * tau)
 
                 for param_target, param in zip(Pi_target.parameters(), Pi.parameters()):
                     param_target.data.copy_(param_target.data * (1.0 - tau) + param.data * tau)
+
+        if terminated or truncated:
+            break
+
+        state = next_state
 
     print(f"Episode : {episode} | TReward : {total_reward}")
 

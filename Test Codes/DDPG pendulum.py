@@ -31,6 +31,21 @@ import torch.nn.functional as F
 
 from collections import deque
 
+
+class PolicyNetwork(nn.Module):
+    def __init__(self):
+        super(PolicyNetwork, self).__init__()
+        self.fc1 = nn.Linear(3, 64) # Input : State 3
+        self.fc2 = nn.Linear(64, 64)
+        self.fc3 = nn.Linear(64, 1)  # Output : Action 1
+
+    def forward(self, state):
+        state  = F.relu(self.fc1(state))
+        state  = F.relu(self.fc2(state))
+        action = torch.tanh(self.fc3(state)) * 2
+
+        return action # [-2, 2]
+
 class QNetwork(nn.Module):
     def __init__(self):
         super(QNetwork, self).__init__()
@@ -49,20 +64,6 @@ class QNetwork(nn.Module):
 
         return self.fc_out(q)
 
-class PolicyNetwork(nn.Module):
-    def __init__(self):
-        super(PolicyNetwork, self).__init__()
-        self.fc1 = nn.Linear(3, 64) # Input : State 3
-        self.fc2 = nn.Linear(64, 64)
-        self.fc3 = nn.Linear(64, 1)  # Output : Action 1
-
-    def forward(self, state):
-        state  = F.relu(self.fc1(state))
-        state  = F.relu(self.fc2(state))
-        action = torch.tanh(self.fc3(state)) * 2
-
-        return action # [-2, 2]
-
 class ReplayBuffer():
     def __init__(self):
         self.buffer = deque(maxlen=50000)
@@ -72,8 +73,8 @@ class ReplayBuffer():
 
     def sample(self, n_sample):
         mini_batch = random.sample(self.buffer, n_sample)
-
         states, actions, rewards, next_states, terminateds, truncateds = [],[],[],[],[],[]
+
         for state, action, reward, next_state, terminated, truncated in mini_batch:
             states.append(state)
             actions.append(action)
@@ -144,11 +145,11 @@ print("")
 print(f"On {device}")
 print("")
 
-lr_pi = 0.0001 # Learning rate
-lr_q  = 0.001
-tau   = 0.001  # Soft update rate
+lr_pi = 0.00005 # Learning rate
+lr_q  = 0.0005
+tau   = 0.005  # Soft update rate
 gamma = 0.95  # Discount Factor
-batch_size = 32
+batch_size = 64
 
 # Q function
 Q = QNetwork().to(device)
@@ -171,8 +172,8 @@ for m in Pi_target.parameters():
 
 env = gym.make('Pendulum-v1', g=9.81)
 
-max_time_step = 1000
-MAX_EPISODE   = 1000
+max_time_step = 10000
+MAX_EPISODE   = 500
 
 Buffer = ReplayBuffer()
 noise  = OrnsteinUhlenbeckNoise(mu = np.zeros(1))
@@ -197,11 +198,6 @@ for episode in range(MAX_EPISODE):
         Buffer.put([state, action, reward, next_state, terminated, truncated])
         total_reward += reward
 
-        if terminated or truncated:
-            break
-
-        state = next_state
-
         if Buffer.size() > 2000: # Train Q, Pi
             train(Q, Q_target, Pi, Pi_target, Q_optimizer, Pi_optimizer, Buffer, batch_size)
 
@@ -211,6 +207,11 @@ for episode in range(MAX_EPISODE):
 
                 for param_target, param in zip(Pi_target.parameters(), Pi.parameters()):
                     param_target.data.copy_(param_target.data * (1.0 - tau) + param.data * tau)
+
+        if terminated or truncated:
+            break
+
+        state = next_state
 
     print(f"Episode : {episode} | TReward : {total_reward}")
 
