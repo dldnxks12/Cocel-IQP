@@ -1,25 +1,10 @@
 """
 # TD3
+https://github.com/sfujim/TD3/blob/master/TD3.py <- 보고 고친 코드
 
-보고 코드 뜯어고쳐라 -> https://github.com/sfujim/TD3/blob/master/TD3.py
+Critic -> Q1, Q2 둘 다 업데이트 해야한다.
 
-# What's difference from simple DDPG?
-
-    - Remove maximization bias with twin network
-
-# Pendulum Env #
-state
-    - x ( cos(theta) )
-    - y ( sin(theta) )
-    - a (angular velocity)
-
-action
-    - Torque, [-2.0 , 2.0] - 1D Continuous Value
-
-reward function
-
-     - theta2 + 0.1 * theta_dt2 + 0.001 * torque2
-
+Actor  -> Q1 or Q2 둘 중 아무거나 써도 된다.
 """
 
 import os
@@ -98,22 +83,23 @@ class ReplayBuffer():
     def size(self):
         return len(self.buffer)
 
-def train(Q1, Q1_target, Q2, Q2_target, Pi, Pi_target, Q1_optimizer, Q2_optimizer, Pi_optimizer, Buffer, batch_size):
+def train(time_step, Q1, Q1_target, Q2, Q2_target, Pi, Pi_target, Q1_optimizer, Q2_optimizer, Pi_optimizer, Buffer, batch_size):
     states, actions, rewards, next_states, terminateds, truncateds = Buffer.sample(batch_size)
     Q_loss, pi_loss = 0, 0
 
     noise_bar  = torch.clamp(torch.tensor(noise()[0]), -1, 1)
     action_bar = Pi_target(next_states) + noise_bar # next_state : 32x3 , action_bar : 32 x 1
 
-    q1_value = Q1_target(next_states, action_bar).mean()
-    q2_value = Q2_target(next_states, action_bar).mean()
+    q1_value = Q1_target(next_states, action_bar)
+    q2_value = Q2_target(next_states, action_bar)
+    q_list = [q1_value, q2_value]
 
-    selected_Q = torch.min(q1_value, q2_value)
-    selected_Q_index = torch.argmin(torch.tensor([q1_value, q2_value]), axis = 0)
+    q1_mean = q1_value.mean()
+    q2_mean = q2_value.mean()
+    selected_Q = torch.min(q1_mean, q2_mean)
+    selected_Q_idx = torch.argmin(torch.tensor([q1_mean, q2_mean]), axis = 0)
 
-
-    dones = []
-
+    dones = [] # Convert terminated / truncated into dones
     for terminated, truncated in zip(terminateds, truncateds):
         if (terminated == True) or (truncated == True):
             dones.append([0])
@@ -124,37 +110,43 @@ def train(Q1, Q1_target, Q2, Q2_target, Pi, Pi_target, Q1_optimizer, Q2_optimize
     actions = torch.unsqueeze(actions, dim = 1)
     rewards = torch.unsqueeze(rewards, dim = 1)
 
-    if selected_Q_index == 0:
+    y = rewards + ( gamma * q_list[selected_Q_idx] * dones ) # minimum loss value for update
 
-        y = rewards + ( gamma*Q1_target(next_states, action_bar) * dones )
-        Q_loss = torch.nn.functional.smooth_l1_loss(Q1(states, actions), y.detach())
-        Q2_optimizer.zero_grad()
-        Q_loss.backward()
-        Q2_optimizer.step()
+    Q_loss = F.mse_loss(Q1(states, actions), y.detach()) # Q1 Network Update
+    Q1_optimizer.zero_grad()
+    Q_loss.backward()
+    Q1_optimizer.step()
 
-    else:
-        y = rewards + (gamma*Q2_target(next_states, action_bar)) * dones
-        Q_loss = torch.nn.functional.smooth_l1_loss(Q2(states, actions), y.detach())
-        Q1_optimizer.zero_grad()
-        Q_loss.backward()
-        Q1_optimizer.step()
+    Q_loss = F.mse_loss(Q2(states, actions), y.detach()) # Q2 Network Update
+    Q2_optimizer.zero_grad()
+    Q_loss.backward()
+    Q2_optimizer.step()
 
-    for p, q in zip(Q1.parameters(), Q2.parameters()):
-        p.requires_grad = False
-        q.requires_grad = False
+    # Periodically update this
 
-    if selected_Q_index == 0:
+    if time_step % 10 == 0:  # Soft update
+        for p, q in zip(Q1.parameters(), Q2.parameters()):
+            p.requires_grad = False
+            q.requires_grad = False
+
         pi_loss = -Q1(states, Pi(states)).mean()
-    else:
-        pi_loss = -Q2(states, Pi(states)).mean()
 
-    Pi_optimizer.zero_grad()
-    pi_loss.backward()
-    Pi_optimizer.step()
+        Pi_optimizer.zero_grad()
+        pi_loss.backward()
+        Pi_optimizer.step()
 
-    for p, q in zip(Q1.parameters(), Q2.parameters()):
-        p.requires_grad = True
-        q.requires_grad = True
+        for p, q in zip(Q1.parameters(), Q2.parameters()):
+            p.requires_grad = True
+            q.requires_grad = True
+
+        for param_target, param, param_target2, param2 in zip(Q1_target.parameters(), Q1.parameters(),
+                                                              Q2_target.parameters(), Q2.parameters()):
+            param_target.data.copy_(param_target.data * (1.0 - tau) + param.data * tau)
+            param_target2.data.copy_(param_target2.data * (1.0 - tau) + param2.data * tau)
+
+        for param_target, param in zip(Pi_target.parameters(), Pi.parameters()):
+            param_target.data.copy_(param_target.data * (1.0 - tau) + param.data * tau)
+
 
 # Add Noise to deterministic action for improving exploration property
 class OrnsteinUhlenbeckNoise:
@@ -174,11 +166,11 @@ print("")
 print(f"On {device}")
 print("")
 
-lr_pi = 0.0001 # Learning rate
-lr_q  = 0.001
-tau   = 0.001  # Soft update rate
+lr_pi = 0.00005 # Learning rate
+lr_q  = 0.0005
+tau   = 0.005  # Soft update rate
 gamma = 0.95  # Discount Factor
-batch_size = 32
+batch_size = 64
 
 # Q function
 Q1 = QNetwork().to(device)
@@ -236,15 +228,7 @@ for episode in range(MAX_EPISODE):
         total_reward += reward
 
         if Buffer.size() > 2000: # Train Q, Pi
-            train(Q1, Q1_target, Q2, Q2_target, Pi, Pi_target, Q1_optimizer, Q2_optimizer, Pi_optimizer, Buffer, batch_size)
-
-            if time_step % 5 == 0: # Soft update
-                for param_target, param, param_target2, param2 in zip(Q1_target.parameters(), Q1.parameters(), Q2_target.parameters(), Q2.parameters()):
-                    param_target.data.copy_(param_target.data * (1.0 - tau) + param.data * tau)
-                    param_target2.data.copy_(param_target2.data * (1.0 - tau) + param2.data * tau)
-
-                for param_target, param in zip(Pi_target.parameters(), Pi.parameters()):
-                    param_target.data.copy_(param_target.data * (1.0 - tau) + param.data * tau)
+            train(time_step, Q1, Q1_target, Q2, Q2_target, Pi, Pi_target, Q1_optimizer, Q2_optimizer, Pi_optimizer, Buffer, batch_size)
 
         if terminated or truncated:
             break
