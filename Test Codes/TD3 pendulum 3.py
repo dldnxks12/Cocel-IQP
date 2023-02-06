@@ -85,21 +85,21 @@ class ReplayBuffer():
 
 def train(time_step, Q1, Q1_target, Q2, Q2_target, Pi, Pi_target, Q1_optimizer, Q2_optimizer, Pi_optimizer, Buffer, batch_size):
     states, actions, rewards, next_states, terminateds, truncateds = Buffer.sample(batch_size)
-    Q_loss, pi_loss = 0, 0
+    Q1_loss, Q2_loss, pi_loss = 0, 0, 0
 
+    # Action + noise clamping (min_action ~ max_action)
     noise_bar  = torch.tensor(noise()[0])
     action_bar = torch.clamp(Pi_target(next_states) + noise_bar, -2, 2) # next_state : 32x3 , action_bar : 32 x 1
 
     q1_value = Q1_target(next_states, action_bar)
     q2_value = Q2_target(next_states, action_bar)
-    q_list = [q1_value, q2_value]
 
     q1_mean = q1_value.mean()
     q2_mean = q2_value.mean()
-    selected_Q = torch.min(q1_mean, q2_mean)
     selected_Q_idx = torch.argmin(torch.tensor([q1_mean, q2_mean]), axis = 0)
+    q_list = [q1_value, q2_value]
+    dones = []
 
-    dones = [] # Convert terminated / truncated into dones
     for terminated, truncated in zip(terminateds, truncateds):
         if (terminated == True) or (truncated == True):
             dones.append([0])
@@ -112,19 +112,18 @@ def train(time_step, Q1, Q1_target, Q2, Q2_target, Pi, Pi_target, Q1_optimizer, 
 
     y = rewards + ( gamma * q_list[selected_Q_idx] * dones ) # minimum loss value for update
 
-    Q_loss = F.mse_loss(Q1(states, actions), y.detach()) # Q1 Network Update
+    Q1_loss = F.mse_loss(Q1(states, actions), y.detach()) # Q1 Network Update
     Q1_optimizer.zero_grad()
-    Q_loss.backward()
+    Q1_loss.backward()
     Q1_optimizer.step()
 
-    Q_loss = F.mse_loss(Q2(states, actions), y.detach()) # Q2 Network Update
+    Q2_loss = F.mse_loss(Q2(states, actions), y.detach()) # Q2 Network Update
     Q2_optimizer.zero_grad()
-    Q_loss.backward()
+    Q2_loss.backward()
     Q2_optimizer.step()
 
     # Periodically update this
-
-    if time_step % 10 == 0:  # Soft update
+    if time_step % 5 == 0:  # Soft update
         for p, q in zip(Q1.parameters(), Q2.parameters()):
             p.requires_grad = False
             q.requires_grad = False
@@ -166,9 +165,9 @@ print("")
 print(f"On {device}")
 print("")
 
-lr_pi = 0.00005 # Learning rate
-lr_q  = 0.0005
-tau   = 0.005  # Soft update rate
+lr_pi = 0.0009 # Learning rate
+lr_q  = 0.009
+tau   = 0.009  # Soft update rate
 gamma = 0.95  # Discount Factor
 batch_size = 64
 

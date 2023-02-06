@@ -87,15 +87,15 @@ def train(time_step, Q1, Q1_target, Q2, Q2_target, Pi, Pi_target, Q1_optimizer, 
     states, actions, rewards, next_states, terminateds, truncateds = Buffer.sample(batch_size)
     Q_loss, pi_loss = 0, 0
 
-    noise_bar  = torch.clamp(torch.tensor(noise()[0]), -1, 1)
-    action_bar = Pi_target(next_states) + noise_bar # next_state : 32x3 , action_bar : 32 x 1
+    # Action + noise clamping (min_action ~ max_action)
+    noise_bar  = torch.tensor(noise()[0])
+    action_bar = torch.clamp(Pi_target(next_states) + noise_bar, -2, 2) # next_state : 32x3 , action_bar : 32 x 1
 
     q1_value = Q1_target(next_states, action_bar)
     q2_value = Q2_target(next_states, action_bar)
 
     q1_mean = q1_value.mean()
     q2_mean = q2_value.mean()
-    selected_Q = torch.min(q1_mean, q2_mean)
     selected_Q_idx = torch.argmin(torch.tensor([q1_mean, q2_mean]), axis = 0)
     q_list = [q1_value, q2_value]
     dones = []
@@ -123,7 +123,7 @@ def train(time_step, Q1, Q1_target, Q2, Q2_target, Pi, Pi_target, Q1_optimizer, 
     Q2_optimizer.step()
 
     # Periodically update this
-    if time_step % 10 == 0:  # Soft update
+    if time_step % 5 == 0:  # Soft update
         for p, q in zip(Q1.parameters(), Q2.parameters()):
             p.requires_grad = False
             q.requires_grad = False
@@ -165,11 +165,11 @@ print("")
 print(f"On {device}")
 print("")
 
-lr_pi = 0.0001 # Learning rate
-lr_q  = 0.001
-tau   = 0.001  # Soft update rate
+lr_pi = 0.0009 # Learning rate
+lr_q  = 0.009
+tau   = 0.009  # Soft update rate
 gamma = 0.95  # Discount Factor
-batch_size = 32
+batch_size = 64
 
 # Q function
 Q1 = QNetwork().to(device)
