@@ -219,3 +219,7 @@ env.close()
 
 plt.plot(X, Y)
 plt.savefig('./DDPG_test_2.png')
+
+Y = np.array(Y)
+np.save('./DDPG_2_X', X)
+np.save('./DDPG_2_Y', Y)

@@ -108,30 +108,47 @@ class OrnsteinUhlenbeckNoise:
         self.x_prev = x
         return x
 
-def train(Buffer, Q, Q_target, P, P_target, Q_optimizer, P_optimizer):
+def train(Buffer, Q1, Q1_target, Q2, Q2_target, P, P_target, Q1_optimizer, Q2_optimizer, P_optimizer):
     states, actions, rewards, next_states, terminateds, truncateds = Buffer.sample(batch_size)
 
     # Type casting & fit dimension
     terminateds = torch.unsqueeze(terminateds.type(torch.FloatTensor).to(device), dim=1)
     rewards = torch.unsqueeze(rewards, dim=1)
 
-    loss_Q, loss_P = 0, 0
-    with torch.no_grad():
-        acts = P_target(next_states)
-        y = rewards + gamma*Q_target(next_states, acts) * (1 - terminateds)
+    loss_Q1, loss_Q2, loss_P = 0, 0, 0
 
-    loss_Q = ((y - Q(states, actions)) ** 2).mean()
+    # Add Noise & clamping
+    noise_bar = torch.clamp(torch.randn_like(actions) * 0.1, -0.5, 0.5)
+
+    with torch.no_grad():
+
+        # noise를 더한 action이 -2 ~ 2 사이를 벗어나지 않도록 clamping 처리
+        acts = torch.clamp((P_target(next_states) + noise_bar), -2, 2)
+
+        Q1_value = Q1_target(next_states, acts)
+        Q2_value = Q2_target(next_states, acts)
+
+        y = rewards + ( gamma* torch.minimum(Q1_value, Q2_value) * (1 - terminateds) )
+
+    loss_Q1 = ((y - Q1(states, actions)) ** 2).mean()
+    loss_Q2 = ((y - Q2(states, actions)) ** 2).mean()
 
     # Update Q network
-    Q_optimizer.zero_grad()
-    loss_Q.backward()
-    Q_optimizer.step()
+    Q1_optimizer.zero_grad()
+    loss_Q1.backward()
+    Q1_optimizer.step()
 
-    loss_P = Q(states, P(states)).mean() * (-1) # multiply -1 for converting GD to GA
+    Q2_optimizer.zero_grad()
+    loss_Q2.backward()
+    Q2_optimizer.step()
+
+    # Q1 or Q2 둘 중 아무거나 써도 상관 X
+    loss_P = Q1(states, P(states)).mean() * (-1) # multiply -1 for converting GD to GA
 
     # Freezing Q Network
-    for p in Q.parameters():
+    for p, q in zip(Q2.parameters(), Q2.parameters()):
         p.require_grads = False
+        q.require_grads = False
 
     # Update P Network
     P_optimizer.zero_grad()
@@ -139,14 +156,19 @@ def train(Buffer, Q, Q_target, P, P_target, Q_optimizer, P_optimizer):
     P_optimizer.step()
 
     # Unfreezing Q Network
-    for p in Q.parameters():
+    for p, q in zip(Q2.parameters(), Q2.parameters()):
         p.require_grads = True
+        q.require_grads = True
 
     # Soft update (not periodically update, instead soft update !!)
-    soft_update(Q, Q_target, P, P_target)
+    soft_update(Q1, Q1_target, Q2, Q2_target, P, P_target)
 
-def soft_update(Q, Q_target, P, P_target):
-    for param, target_param in zip(Q.parameters(), Q_target.parameters()):
+
+def soft_update(Q1, Q1_target, Q2, Q2_target, P, P_target):
+    for param, target_param in zip(Q1.parameters(), Q1_target.parameters()):
+        target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * (tau))
+
+    for param, target_param in zip(Q2.parameters(), Q2_target.parameters()):
         target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * (tau))
 
     for param, target_param in zip(P.parameters(), P_target.parameters()):
@@ -156,11 +178,16 @@ def soft_update(Q, Q_target, P, P_target):
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# Q
-Q = QNetwork().to(device)
-Q_target = QNetwork().to(device)
-Q_learning_rate = 0.001
-Q_optimizer = optim.Adam(Q.parameters(), lr = Q_learning_rate)
+# Q x 2
+Q1 = QNetwork().to(device)
+Q1_target = QNetwork().to(device)
+Q1_learning_rate = 0.001
+Q1_optimizer = optim.Adam(Q1.parameters(), lr = Q1_learning_rate)
+
+Q2 = QNetwork().to(device)
+Q2_target = QNetwork().to(device)
+Q2_learning_rate = 0.001
+Q2_optimizer = optim.Adam(Q2.parameters(), lr = Q2_learning_rate)
 
 # P
 P = PNetwork().to(device)
@@ -198,7 +225,9 @@ for episode in range(MAX_EPISODE):
 
     for step in range(MAX_STEP):
 
-        action = P(state) + noise()[0]
+        with torch.no_grad():
+            action = torch.clamp( (P(state) + noise()[0]), -2, 2)
+
         next_state, reward, terminated, truncated, _ = env.step(action.cpu().detach().numpy())
         next_state = torch.tensor(next_state).to(device)
 
@@ -206,7 +235,7 @@ for episode in range(MAX_EPISODE):
         Buffer.put([state, action, reward, next_state, terminated, truncated])
 
         if Buffer.size() > 50:
-            train(Buffer, Q, Q_target, P, P_target, Q_optimizer, P_optimizer)  # Soft update in here, too
+            train(Buffer, Q1, Q1_target, Q2, Q2_target, P, P_target, Q1_optimizer, Q2_optimizer, P_optimizer)  # Soft update in here, too
 
         if terminated or truncated:
             break
@@ -218,8 +247,10 @@ for episode in range(MAX_EPISODE):
 env.close()
 
 plt.plot(X, Y)
-plt.savefig('./DDPG_test_4.png')
+plt.savefig('./TD3_test_4.png')
 
 Y = np.array(Y)
-np.save('./DDPG_4_X', X)
-np.save('./DDPG_4_Y', Y)
+np.save('./TD3_4_X', X)
+np.save('./TD3_4_Y', Y)
+
+

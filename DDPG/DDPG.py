@@ -3,6 +3,7 @@ import sys
 import math
 import random
 import numpy as np
+import matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
@@ -178,6 +179,10 @@ batch_size  = 32
 gamma       = 0.99
 tau         = 0.001
 
+# For saving learning graphs
+X = np.arange(0, MAX_EPISODE, 1) # 0 ~ MAX_EPISIODE까지 1 단위로 찍어보자
+Y = []
+
 # Define gym environment
 #env = gym.make('Pendulum-v1', render_mode = 'human')  # Rendering = On
 env = gym.make('Pendulum-v1')                          # Rendering = Off
@@ -208,5 +213,13 @@ for episode in range(MAX_EPISODE):
 
         state = next_state
 
+    Y.append(total_reward)
     print(f"# - Episode : {episode} | Total reward : {total_reward} - #")
 env.close()
+
+plt.plot(X, Y)
+plt.savefig('./DDPG_test_1.png')
+
+Y = np.array(Y)
+np.save('./DDPG_1_X', X)
+np.save('./DDPG_1_Y', Y)
