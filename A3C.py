@@ -206,7 +206,7 @@ def train(global_Actor, global_Critic, device, rank):
                 rewards = torch.FloatTensor(rewards).unsqueeze(1).to(device)
                 next_states = torch.FloatTensor(next_states).to(device)
                 terminateds = torch.FloatTensor(terminateds).to(device)
-                truncateds = torch.FloatTensor(truncateds).to(device)
+                truncateds = torch.FloatTensor(truncateds).unsqueeze(1).to(device)
 
                 v_s = local_Critic(states)
                 v_prime = local_Critic(next_states)
