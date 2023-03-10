@@ -1,6 +1,6 @@
 """
 
-My first ditributed reinforcement learning - A3C
+My first distributed reinforcement learning - A3C
 
 *reference : https://github.com/keep9oing/PG-Family/blob/main/A3C.py
 
